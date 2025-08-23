@@ -233,7 +233,7 @@ void main()
         return;
     }
     vec3 coordMap = GenerateCoordinateMap(ScreenCoord);
-    vec3 viewIndices = vec3(float(QuiltWidth * QuiltHeight - 1) - round(coordMap * float(QuiltWidth * QuiltHeight - 1)));
+    vec3 viewIndices = vec3(float(QuiltWidth * QuiltHeight - 2) - round(coordMap * float(QuiltWidth * QuiltHeight - 2)));
     int internal_ViewCount = QuiltWidth * QuiltHeight - 1;
     if (QuiltWidth <= 0 || QuiltHeight <= 0 || internal_ViewCount <= 0) {
         FragColor = vec4(0.0, 0.0, 0.0, 1.0);
