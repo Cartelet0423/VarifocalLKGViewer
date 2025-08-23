@@ -836,7 +836,6 @@ def create_cursor(width: int, height: int):
     center_y = height / 2.0
     max_distance = width / 2.0
 
-    # 各ピクセルをループ処理
     for y in range(height):
         for x in range(width):
             distance = math.sqrt((x - center_x) ** 2 + (y - center_y) ** 2)
