@@ -314,7 +314,7 @@ vec2 getRefocusedSubUV(vec2 subUV, float angleScale, float viewIndex, int totalV
 }
 
 void main() {
-    int totalViews = u_quiltWidth * u_quiltHeight;
+    int totalViews = u_quiltWidth * u_quiltHeight - 1;
     if (totalViews < 2) {
         FragColor = texture(u_inputQuilt, TexCoord);
         return;
@@ -830,6 +830,28 @@ class LKGViewerWindow(pyglet.window.Window):
                         column=0, row=len(fields) + 1, columnspan=2, sticky="ew", pady=10)
         populate_fields(current_settings)
 
+def create_cursor(width: int, height: int):
+    image_data = bytearray(width * height * 4)
+    center_x = width / 2.0
+    center_y = height / 2.0
+    max_distance = width / 2.0
+
+    # 各ピクセルをループ処理
+    for y in range(height):
+        for x in range(width):
+            distance = math.sqrt((x - center_x) ** 2 + (y - center_y) ** 2)
+            normalized_distance = min(distance / max_distance, 1.0)
+            alpha_float = math.cos(normalized_distance * (math.pi/2))**2
+            alpha_byte = int(alpha_float * 255)
+            index = (y * width + x) * 4
+            
+            image_data[index] = 255
+            image_data[index + 1] = 255
+            image_data[index + 2] = 255
+            image_data[index + 3] = alpha_byte
+    image = pyglet.image.ImageData(width, height, 'RGBA', bytes(image_data))
+    return pyglet.window.ImageMouseCursor(image, width // 2, height // 2)
+
 if __name__ == '__main__':
     tk_root = tk.Tk()
     tk_root.withdraw()
@@ -850,4 +872,5 @@ if __name__ == '__main__':
         tk_root=tk_root,
         caption="VarifocalLKGViewer", resizable=True, config=config, width=225, height=400
     )
+    window.set_mouse_cursor(create_cursor(64, 64))
     pyglet.app.run()
