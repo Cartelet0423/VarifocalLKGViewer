@@ -329,8 +329,8 @@ void main() {
     float viewIndex = viewRowCol.y * quiltDim.x + viewRowCol.x;
 
     float samplingViewIndex = viewIndex;
-    if (int(viewIndex) == totalViews - 1) {
-        samplingViewIndex = float(totalViews - 2);
+    if (int(viewIndex) == totalViews) {
+        samplingViewIndex = float(totalViews - 1);
     }
 
     float angleScale = calculateAngleScale(samplingViewIndex, totalViews, u_maxAngleScale);
@@ -626,7 +626,33 @@ class LKGViewerWindow(pyglet.window.Window):
             if not quilt_width or not quilt_height:
                 logger.warning("Quilt dimensions not found. Cannot set focus from depth.")
                 return
-            u, v = x / self.width, y / self.height
+
+            screen_u, screen_v = x / self.width, y / self.height
+
+            quilt_u_transformed = (screen_u - 0.5) / self.zoom + 0.5 + self.pan_x
+            quilt_v_transformed = (screen_v - 0.5) / self.zoom + 0.5 + self.pan_y
+
+            aspect = q_params.get('Aspect', 9.0/16.0)
+            if aspect <= 0.0: aspect = 9.0/16.0
+            
+            image_aspect_wh = 1.0 / aspect
+            window_aspect_wh = self.width / self.height
+
+            scale_x, scale_y = 1.0, 1.0
+            if window_aspect_wh > image_aspect_wh:
+                scale_x = image_aspect_wh / window_aspect_wh
+            else:
+                scale_y = window_aspect_wh / image_aspect_wh
+
+            centered_quilt_u = quilt_u_transformed - 0.5
+            centered_quilt_v = quilt_v_transformed - 0.5
+            
+            u = (centered_quilt_u / scale_x) + 0.5
+            v = (centered_quilt_v / scale_y) + 0.5
+
+            if not (0.0 <= u <= 1.0 and 0.0 <= v <= 1.0):
+                return
+
             depth_map_u = (u + float(quilt_width - 1)) / float(quilt_width)
             depth_map_v = (v + float(quilt_height - 1)) / float(quilt_height)
             tex_width, tex_height = self.image_data.width, self.image_data.height
