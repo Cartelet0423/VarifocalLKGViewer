@@ -270,7 +270,6 @@ void main()
 }
 """
 
-# ### NEW: Quilt画像リマップ用シェーダー ###
 REMAP_VERTEX_SHADER_CODE = """
 #version 330 core
 layout (location = 0) in vec3 aPos;
@@ -388,6 +387,17 @@ class LKGViewerWindow(pyglet.window.Window):
         self.settings_window_instance = None
         self.last_non_varifocal_settings = {}
         self.DEFAULT_VARIFOCAL_MAS = 1.1
+        
+        # Slideshow attributes
+        self.slideshow_interval = 5.0
+        self.is_slideshow_playing = False
+        self.slideshow_dialog_instance = None
+        self.slideshow_play_pause_button = None
+        self.slideshow_interval_var = None
+        
+        # ### NEW: Attribute to manage global key bindings ###
+        self.open_dialogs = set()
+        
         pyglet.clock.schedule_interval(self.update_focus, 1/60.0)
         self.setup_shader_uniforms()
 
@@ -590,7 +600,9 @@ class LKGViewerWindow(pyglet.window.Window):
         self.pan_y = max(min(self.pan_y, max_pan_val), -max_pan_val)
 
     def on_key_press(self, symbol, modifiers):
-        if symbol in (pyglet.window.key.F11, pyglet.window.key.F): self.set_fullscreen(not self.fullscreen)
+        if symbol == pyglet.window.key.SPACE:
+            self.toggle_slideshow_playback()
+        elif symbol in (pyglet.window.key.F11, pyglet.window.key.F): self.set_fullscreen(not self.fullscreen)
         elif symbol == pyglet.window.key.RIGHT: self.change_image(1)
         elif symbol == pyglet.window.key.LEFT: self.change_image(-1)
         elif symbol == pyglet.window.key.ESCAPE: self.close()
@@ -600,10 +612,11 @@ class LKGViewerWindow(pyglet.window.Window):
             self.open_settings_window()
         elif symbol == pyglet.window.key.S and (modifiers & pyglet.window.key.MOD_CTRL):
             self.save_refocused_quilt()
+        elif symbol == pyglet.window.key.T and (modifiers & pyglet.window.key.MOD_CTRL):
+            self.open_slideshow_dialog()
         elif symbol == pyglet.window.key.R: 
             self.zoom, self.pan_x, self.pan_y = 1.0, 0.0, 0.0
             self._update_view_cache()
-
 
     def on_mouse_press(self, x, y, button, modifiers):
         if button == pyglet.window.mouse.LEFT:
@@ -628,25 +641,19 @@ class LKGViewerWindow(pyglet.window.Window):
                 return
 
             screen_u, screen_v = x / self.width, y / self.height
-
             quilt_u_transformed = (screen_u - 0.5) / self.zoom + 0.5 + self.pan_x
             quilt_v_transformed = (screen_v - 0.5) / self.zoom + 0.5 + self.pan_y
-
             aspect = q_params.get('Aspect', 9.0/16.0)
             if aspect <= 0.0: aspect = 9.0/16.0
-            
             image_aspect_wh = 1.0 / aspect
             window_aspect_wh = self.width / self.height
-
             scale_x, scale_y = 1.0, 1.0
             if window_aspect_wh > image_aspect_wh:
                 scale_x = image_aspect_wh / window_aspect_wh
             else:
                 scale_y = window_aspect_wh / image_aspect_wh
-
             centered_quilt_u = quilt_u_transformed - 0.5
             centered_quilt_v = quilt_v_transformed - 0.5
-            
             u = (centered_quilt_u / scale_x) + 0.5
             v = (centered_quilt_v / scale_y) + 0.5
 
@@ -689,7 +696,6 @@ class LKGViewerWindow(pyglet.window.Window):
         self._update_view_cache()
 
     def save_refocused_quilt(self):
-        """現在のフォーカス値を適用してQuilt画像を再生成し、ファイルに保存します。"""
         if not self.texture:
             messagebox.showwarning("警告", "保存する画像が読み込まれていません。")
             return
@@ -767,7 +773,38 @@ class LKGViewerWindow(pyglet.window.Window):
         self.save_cache(self.view_cache, 'view_cache.json')
         pyglet.clock.unschedule(self.update_focus)
         pyglet.clock.unschedule(self.update_tk)
+        pyglet.clock.unschedule(self._slideshow_tick)
         super().on_close()
+
+    def _handle_global_key_press(self, event):
+        """Handle key presses when a Tkinter dialog is focused."""
+        widget = self.tk_root.focus_get()
+        is_entry = isinstance(widget, (tk.Entry, ttk.Entry))
+        keysym = event.keysym
+
+        # Ignore shortcuts that conflict with typing in an Entry widget
+        if is_entry and keysym in ('space', 'Left', 'Right', 'Up', 'Down', 'r', 'R'):
+            return
+
+        if keysym == 'space':
+            self.toggle_slideshow_playback()
+        elif keysym == 'Right':
+            self.change_image(1)
+        elif keysym == 'Left':
+            self.change_image(-1)
+        elif keysym == 'Up':
+            self.focus_value = min(1.0, self.focus_value + self.focus_change_speed)
+            self.focus_cache[self.current_image_path] = self.focus_value
+        elif keysym == 'Down':
+            self.focus_value = max(0.0, self.focus_value - self.focus_change_speed)
+            self.focus_cache[self.current_image_path] = self.focus_value
+        elif keysym.lower() == 'r':
+            self.zoom, self.pan_x, self.pan_y = 1.0, 0.0, 0.0
+            self._update_view_cache()
+        elif keysym in ('F11', 'f', 'F'):
+            if is_entry and keysym.lower() == 'f':
+                return
+            self.set_fullscreen(not self.fullscreen)
 
     def open_settings_window(self):
         if self.settings_window_instance and self.settings_window_instance.winfo_exists():
@@ -780,7 +817,13 @@ class LKGViewerWindow(pyglet.window.Window):
         if not current_settings:
             messagebox.showerror("エラー", "Quiltパラメータを特定できません。")
             return
+            
         root = tk.Toplevel(self.tk_root)
+        # ### NEW: Manage global key binding ###
+        if not self.open_dialogs:
+            self.tk_root.bind_all("<KeyPress>", self._handle_global_key_press)
+        self.open_dialogs.add(root)
+
         self.settings_window_instance = root
         root.title("Quilt 設定 (Live)")
         root.attributes("-topmost", True)
@@ -800,8 +843,7 @@ class LKGViewerWindow(pyglet.window.Window):
                 new_settings['QuiltHeight'] = int(new_settings['QuiltHeight'])
                 self.override_settings = new_settings
                 self.quilt_settings_cache[self.current_image_path] = new_settings
-            except (ValueError, TypeError):
-                pass
+            except (ValueError, TypeError): pass
 
         def _remove_traces():
             for key, var in vars.items():
@@ -841,8 +883,14 @@ class LKGViewerWindow(pyglet.window.Window):
             _apply_live_settings()
             
         def on_settings_close():
+            # ### NEW: Manage global key binding ###
+            self.open_dialogs.discard(root)
+            if not self.open_dialogs:
+                self.tk_root.unbind_all("<KeyPress>")
+
             self.settings_window_instance = None
             root.destroy()
+
         root.protocol("WM_DELETE_WINDOW", on_settings_close)
         _add_traces()
         fields = [("Quilt Width:", 'QuiltWidth'), ("Quilt Height:", 'QuiltHeight'),
@@ -855,6 +903,86 @@ class LKGViewerWindow(pyglet.window.Window):
         ttk.Button(main_frame, text="画像の値にリセット", command=reset_to_image_defaults).grid(
                         column=0, row=len(fields) + 1, columnspan=2, sticky="ew", pady=10)
         populate_fields(current_settings)
+
+    def _slideshow_tick(self, dt):
+        self.change_image(1)
+
+    def toggle_slideshow_playback(self):
+        """Starts, pauses, or resumes the slideshow. Can be called from anywhere."""
+        if not self.is_slideshow_playing and not self.current_image_path:
+            logger.warning("Cannot start slideshow, no image loaded.")
+            return
+
+        if self.is_slideshow_playing:
+            pyglet.clock.unschedule(self._slideshow_tick)
+            self.is_slideshow_playing = False
+            logger.info("Slideshow paused.")
+        else:
+            current_interval = self.slideshow_interval
+            try:
+                if self.slideshow_dialog_instance and self.slideshow_dialog_instance.winfo_exists():
+                    new_interval = float(self.slideshow_interval_var.get())
+                    if new_interval >= 0.1:
+                        current_interval = new_interval
+                    else:
+                        self.slideshow_interval_var.set("0.1")
+                        current_interval = 0.1
+            except (ValueError, TypeError):
+                logger.warning("Invalid slideshow interval, using previous value.")
+            
+            self.slideshow_interval = current_interval
+            pyglet.clock.schedule_interval(self._slideshow_tick, self.slideshow_interval)
+            self.is_slideshow_playing = True
+            logger.info(f"Slideshow started with interval: {self.slideshow_interval}s")
+
+        if self.slideshow_dialog_instance and self.slideshow_dialog_instance.winfo_exists():
+            button_text = "一時停止 (Pause)" if self.is_slideshow_playing else "再生 (Play)"
+            self.slideshow_play_pause_button.config(text=button_text)
+
+    def open_slideshow_dialog(self):
+        if self.slideshow_dialog_instance and self.slideshow_dialog_instance.winfo_exists():
+            self.slideshow_dialog_instance.lift()
+            return
+
+        if not self.current_image_path:
+            messagebox.showwarning("警告", "スライドショーを開始するには、まず画像を読み込んでください。")
+            return
+
+        root = tk.Toplevel(self.tk_root)
+        # ### NEW: Manage global key binding ###
+        if not self.open_dialogs:
+            self.tk_root.bind_all("<KeyPress>", self._handle_global_key_press)
+        self.open_dialogs.add(root)
+
+        self.slideshow_dialog_instance = root
+        root.title("スライドショー設定")
+        root.attributes("-topmost", True)
+        main_frame = ttk.Frame(root, padding="10")
+        main_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        main_frame.columnconfigure(1, weight=1)
+
+        ttk.Label(main_frame, text="再生間隔 (秒):").grid(column=0, row=0, sticky=tk.W, pady=5, padx=5)
+        self.slideshow_interval_var = tk.StringVar(value=str(self.slideshow_interval))
+        ttk.Entry(main_frame, textvariable=self.slideshow_interval_var, width=10).grid(column=1, row=0, sticky=(tk.W, tk.E), pady=5, padx=5)
+
+        button_text = "一時停止 (Pause)" if self.is_slideshow_playing else "再生 (Play)"
+        self.slideshow_play_pause_button = ttk.Button(main_frame, text=button_text)
+        self.slideshow_play_pause_button['command'] = self.toggle_slideshow_playback
+        self.slideshow_play_pause_button.grid(column=0, row=1, columnspan=2, sticky="ew", pady=10, padx=5)
+
+        def on_dialog_close():
+            # ### NEW: Manage global key binding ###
+            self.open_dialogs.discard(root)
+            if not self.open_dialogs:
+                self.tk_root.unbind_all("<KeyPress>")
+            
+            # Don't stop the slideshow, just close the dialog
+            self.slideshow_dialog_instance = None
+            self.slideshow_play_pause_button = None
+            self.slideshow_interval_var = None
+            root.destroy()
+
+        root.protocol("WM_DELETE_WINDOW", on_dialog_close)
 
 def create_cursor(width: int, height: int):
     image_data = bytearray(width * height * 4)
